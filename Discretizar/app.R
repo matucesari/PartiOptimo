@@ -1,6 +1,6 @@
 # Librerías
 libraries <- c("shiny", "classInt", "shinyWidgets", "shinydashboard", "RColorBrewer",
-               "shinyjs", "dplyr", "RColorBrewer", "DT","htmlwidgets")
+               "shinyjs", "dplyr", "RColorBrewer", "DT","htmlwidgets","dplyr", "tidyr","ggplot2")
 
 # Instala los paquetes si no están instalados
 install.packages(setdiff(libraries, rownames(installed.packages())), dependencies = TRUE)
@@ -20,8 +20,7 @@ sidebar <- dashboardSidebar(
     menuItem("Cargar la Tabla de Datos", tabName = "datos", icon = icon("table")),
     menuItem("Discretización", tabName = "parti", icon = icon("list-alt"))
   ),
-  actionButton("exit_btn", "Salir"),
-  actionButton("btn_nuevo", "Nuevo")
+  actionButton("exit_btn", "Salir")
 )
 
 # Cuerpo ------------------------------------------------------------------
@@ -29,27 +28,39 @@ body <- dashboardBody(
   tabItems(
     tabItem(
       tabName = "datos",
-      h3("Carga de fichero CSV"), 
+      h2("Carga de fichero CSV"),  # Título de la sección
+      # Contenedor para la carga de archivos y configuraciones preliminares
       box(width = 12,
-          # Opciones de archivo
+          # Instrucciones para el usuario
+          h5("La tabla CSV DEBE tener en 1º coluna: etiqueta de observaciones ID"), 
+          # Interruptores para especificar características del archivo CSV
           materialSwitch(inputId = "header", "El archivo tiene encabezado", value = TRUE),
-          radioButtons("sep", "Separador de campos:", 
-                       choices = c(Coma = ",", Punto_y_Coma = ";", Tabulador = "\t"), 
-                       selected = ";"),
-          radioButtons("dec", "Separador decimal:", 
-                       choices = c(Coma = ",", Punto = "."), 
-                       selected = '.'),
-          # Seleccionar el archivo CSV
+          materialSwitch(inputId = "nominales", "La tabla tiene Variables Categóricas Nominales", value = FALSE),
+          # Opciones para especificar el formato del archivo CSV
+          radioButtons("sep", "Separador de campos:", choices = c(Coma = ",", Punto_y_Coma = ";", Tabulador = "\t"), selected = ";"),
+          radioButtons("dec", "Separador decimal:", choices = c(Coma = ",", Punto = "."), selected = '.'),
           fileInput("file", "Selecciona un archivo CSV:", accept = ".csv")
       ),
-      h3("Tabla de Datos Cuantitativa"), 
+      h2("Datos Originales"),
+      # Visualización de estadísticas y datos originales
       box(width = 12,
-          h3("Estadísitcas de las Variables Cuantitativas"), 
+          h3("Estadísitcas de las Variables Cuantitativas"),
           verbatimTextOutput("estadi"),
-          box( plotOutput("histo") ),
-          box( plotOutput("corre") ),
-          DTOutput("original_table")
-      )
+          box(width = 12, 
+              plotOutput("corre"),
+              conditionalPanel(
+                condition = "input.nominales == true",
+                selectInput("catVar", "Seleccione la variable categórica para Colorear Grafico:", choices = NULL)
+              )
+          ),
+          conditionalPanel(
+            condition = "input.nominales == true",
+            h3("Estadísitcas de las Variables Cualitativas"),
+            plotOutput("bar_char")
+          )
+      ),
+      h3("Tabla de Datos"),
+      DTOutput("originalTable", height = 700)
     ),
     tabItem(
       tabName = "parti",
@@ -87,8 +98,11 @@ ui <- dashboardPage(
 
 # Define el servidor de Shiny
 server <- function(input, output) {
-  # inicializo
-  datos <- reactiveVal(NULL)
+  # Inicialización de valores reactivos para almacenar datos, factores, y otros elementos necesarios para la aplicación.
+  datos <-  reactiveVal(list())
+  factores <- reactiveVal(NULL)
+  df <- reactiveVal(NULL)
+  
   historial <- reactiveVal(list())
   temp <- reactiveVal(list(p = factor(), e = character(0)))
   
@@ -97,33 +111,56 @@ server <- function(input, output) {
   r <- reactiveVal(NULL)
   tabla_resultados <- reactiveVal(NULL)
   
-  # Cargar el archivo CSV y obtener las variables numéricas
+  # Manejo de la carga de archivos CSV, incluyendo configuraciones de lectura y preprocesamiento inicial.
   observeEvent(input$file, {
-    df <- read.csv(input$file$datapath, 
+    tryCatch({
+      # Carga el archivo CSV y actualiza el dataframe reactivo 'df'
+      df( read.csv(input$file$datapath, 
                    header = input$header, 
                    dec = input$dec, 
                    sep = input$sep, 
                    stringsAsFactors = TRUE, 
-                   row.names = 1 )
-    # Separar factores de números  
-    n <-as.data.frame(df[, sapply(df, function(x) is.numeric(x) && !is.factor(x)), drop=FALSE])
-    
-    # Actualizar opciones del menú desplegable
-    updateSelectInput(getDefaultReactiveDomain(), inputId = "variable", choices = names(n), selected = NULL) 
-    datos(n)
+                   row.names = 1 ))
+      # Extrae columnas que son factores y numéricas separadamente, 
+      # asegurando que no se caiga a un vector si hay una sola columna
+      # Identificar columnas de factores
+      fact <- as.data.frame(df()[, sapply(df(), is.factor), drop=FALSE])
+      # Separar factores de números  
+      n <-as.data.frame(df()[, sapply(df(), function(x) is.numeric(x)  && !is.factor(x)), drop = FALSE])
+      # Para asegurar que el nombre de la variable se mantenga incluso cuando hay solo una columna, 
+      # puedes usar el argumento drop = FALSE al extraer las columnas numéricas
+      # Convierte columnas relevantes a numéricas si es necesario
+      f <- as.data.frame(lapply(fact, as.double))
+      # Actualiza la interfaz las listas de seleccion de variables
+      updateSelectInput(getDefaultReactiveDomain(), inputId = "variable", choices = c(names(n),names(f)), selected = NULL) 
+      updateSelectInput(getDefaultReactiveDomain(), inputId = "catVar", choices = c(names(fact),"Sin selección"), selected = "Sin selección") 
+      # Guarda los factores y datos separados en sus respectivas variables reactivas
+      factores(fact)
+      datos(list(cuanti=n, cuali=f))
+    }, error = function(e) {
+      # Maneja errores en la carga del archivo mostrando un diálogo modal con el mensaje de error
+      showModal(modalDialog(
+        title = "Error en la Carga del fichero CSV ",
+        paste("Se ha producido un error al cargar y preprocesamiento del fichero:  ", e$message),
+        easyClose = TRUE
+      ))
+    })
   })
   
-  # Mostrar la tabla de datos original
-  output$original_table <- DT::renderDataTable({
+  
+  # Renderiza la tabla de datos original usando DT::renderDataTable.	
+  output$originalTable <- DT::renderDataTable({
     req(input$file)
-    DT::datatable(datos(), options = list(scrollX = TRUE))
+    # Mostrar la tabla de datos original
+    DT::datatable(df(), options = list(scrollX = TRUE))  # scrollX permitir el desplazamiento horizontal
   })
   
-  # Mostrar Estadísitcas de la tabla numérica
+  # Renderiza estadísticas descriptivas de las variables cuantitativas.
   output$estadi <- renderPrint({
     req(input$file)
     tryCatch({
-      summary(datos())
+      # Mostrar Estadísitcas de la tabla numérica
+      summary(datos()$cuanti)
     }, error = function(e) {
       showModal(modalDialog(
         title = "Error en Calculo de Estadísitcas",
@@ -132,25 +169,28 @@ server <- function(input, output) {
       ))
     })
   })
-  # Gráfico de histogramas
-  output$histo <- renderPlot({
-    req(input$file)
-    tryCatch({
-      plot_histogram(datos(), ncol = 2L)
-    }, error = function(e) {
-      showModal(modalDialog(
-        title = "Error en Gráfico de histogramas",
-        paste("Se ha producido un error al realizar los histogramas de cada variable cuantitativa:", e$message),
-        easyClose = TRUE
-      ))
-    })
-  })
   
-  # Matriz de correlación
+  # Renderiza la matriz de correlación de las variables cuantitativas.
   output$corre <- renderPlot({
     req(input$file)
     tryCatch({
-      plot_correlation(datos())
+      # Matriz de correlación
+      #plot_correlation(datos()$cuanti)
+      # Ajustes según la entrada de la variable categórica
+      if (input$nominales != FALSE && input$catVar != "Sin selección") {
+        d <- factores()  # Rescato las variables categoricas
+        colorVar <- input$catVar
+        # Creación del gráfico Diagrama de pares con ggpairs
+        ggpairs(datos()$cuanti,
+                title = "Diagrama de pares", axisLabels = "show",
+                aes(color = d[[colorVar]], alpha = 0.5),
+                lower = list(continuous = "smooth") )
+      } else {
+        # Creación del gráfico Diagrama de pares con ggpairs
+        ggpairs(datos()$cuanti,
+                title = "Diagrama de pares", axisLabels = "show",
+                lower = list(continuous = "smooth") )
+      }
     }, error = function(e) {
       showModal(modalDialog(
         title = "Error en cálculo de matriz de correlación ",
@@ -160,14 +200,38 @@ server <- function(input, output) {
     })
   }) 
   
-  
-  
+  # Renderiza gráficos de barras para las distribuciones de las variables categóricas.
+  output$bar_char <- renderPlot({
+    req(input$nominales)
+    if(input$nominales){
+      # Gráfico de barras con xray::distributions(data frame factores)
+      # xray::distributions(datos()$cuali)
+      # Calcular frecuencias para cada factor y almacenar en una lista de tablas
+      list_of_tables <- lapply(factores(), table)
+      # Convertir la lista de tablas a un dataframe
+      frequency_data <- bind_rows(lapply(names(list_of_tables), function(x) {
+        data.frame(Factor = x,
+                   Level = names(list_of_tables[[x]]),
+                   Frequency = as.vector(list_of_tables[[x]]),
+                   stringsAsFactors = FALSE)
+      }), .id = "Variable")
+      # Graficar las frecuencias usando ggplot2
+      ggplot(frequency_data, aes(x = Level, y = Frequency, fill = Level)) +
+        geom_bar(stat = "identity") +
+        facet_wrap(~ Factor, scales = "free_x") +
+        theme_minimal() +
+        labs(title = "Frecuencia ocurrencia de cada Variables Nominales",
+             x = "Modalidades o Categorias",
+             y = "Frecuencia") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    }
+  })
   
   # Función para discretizar variables
-  discretizar <- function(datos, variable, num_intervals, metodo, num_dec) {
-    variable_name <- names(datos[variable])
+  discretizar <- function(d, variable, num_intervals, metodo, num_dec) {
+    variable_name <- names(d$cuanti[variable])
     if (metodo == "Fisher") {  style <- "fisher"  } else {  style <- "kmeans"    }
-    r_intervals <- classIntervals(datos[,variable], n = num_intervals, style = style, dataPrecision = num_dec)
+    r_intervals <- classIntervals(d$cuanti[,variable], n = num_intervals, style = style, dataPrecision = num_dec)
     # Obtén el número de intervalos discretizados
     inter <- length(r_intervals$brks) - 1
     # Crea un vector de números de rango basado en el número de intervalos
@@ -181,7 +245,7 @@ server <- function(input, output) {
                      round(r_intervals$brks[-1],num_dec),"]")
     # Crear nueva variable cualitativa
     nombre_variable <- paste0("R_",variable_name)
-    var_Nueva <- cut(datos[,variable], breaks = r_intervals$brks, labels = labels, include.lowest = TRUE)
+    var_Nueva <- cut(d$cuanti[,variable], breaks = r_intervals$brks, labels = labels, include.lowest = TRUE)
     
     # Combina los valores actuales de temp()$p y var_Nueva al lado
     particiones <- cbind(temp()$p, as.character(var_Nueva))
@@ -191,9 +255,7 @@ server <- function(input, output) {
     
     # Actualiza temp() con los nuevos valores
     temp(list(p = particiones, e = nombres_parti))
-    
     r(round(r_intervals$brks,1))
-    
     return(capture.output(print(r_intervals)))
   }
   
@@ -205,7 +267,10 @@ server <- function(input, output) {
         # Crear el data frame discretizado
         variables <- temp()$p
         discretized <- data.frame(variables)
-        colnames(discretized) <- temp()$e
+        
+        etiquetas <- gsub("\\[", "_",  temp()$e) # Reemplaza corchete abierto
+        etiquetas <- sub("\\]", "_",  etiquetas) # Reemplaza corchete cerrado
+        colnames(discretized) <- etiquetas
         
         # Actualizar objeto reactiveVal con el nuevo data frame discretizado
         historial( list(data_discretized = discretized) )  
@@ -222,28 +287,17 @@ server <- function(input, output) {
           tr <- data.frame(
             Minimo = limites[-length(limites)],
             Maximo = limites[-1],
-            Centro = (limites[-length(limites)] + limites[-1]) / 2,
-            Desvio = (limites[-1] - limites[-length(limites)]) / 2
+            Centro = (limites[-length(limites)] + limites[-1]) / 2
           )
-          primero <- 1
-          ultimo <- length(limites)-1
-          tr[primero,4]<-tr$Desvio[primero]*2
-          tr[ultimo,4]<-tr$Desvio[ultimo]*2
           tabla_resultados(tr)
           tr
         }, rownames = TRUE)      
-        
-        # Función para calcular la Gaussiana
-        gaussiana <- function(x, a, b) {
-          return(exp(-((x - a) / b)^2))
-        }
         
         # Datos 
         output$discretized_table <- DT::renderDataTable({
           req(input$discretize_btn)
           DT::datatable(historial()$data_discretized, options = list(scrollX = TRUE))
         })
-
   })
   
   # Descargar los datos discretizados en un archivo CSV
@@ -257,45 +311,11 @@ server <- function(input, output) {
                 row.names = TRUE)
     }
   )
-  
-  # Boton para resetear y comenzar de nuevo
-  observeEvent(input$btn_nuevo,{
-    showModal(modalDialog(
-      title = "Confirmar reinicio",
-      "¿Está seguro que desea reiniciar la aplicación?",
-      footer = tagList(
-        modalButton("Cancelar"), 
-        actionButton("confirmar", "Confirmar")
-      )
-    ))
-    observeEvent(input$confirmar, {
-      # Reiniciar variables globales
-      datos <- reactiveVal(NULL)
-      historial <- reactiveVal(list())
-      temp <- reactiveVal(list(p = factor(), e = character(0)))  
-      particiones <- c()
-      nombres_parti <- c()
-      r <- reactiveVal(NULL)
-      tabla_resultados <- reactiveVal(NULL)
-      
-      # Limpiar salidas
-      output$original_table <- NULL
-      output$discretization_results <- NULL
-      output$disc_intervalos <- NULL
-      output$discretized_table <- NULL
-      output$download_csv <- NULL
-      
-      removeModal() # Cerrar modal
-    })
-  })
-  
   # Detiene la aplicación Shiny cuando se presiona el botón de salida
   observeEvent(input$exit_btn, {
     stopApp()  
   })
-  
 }
-
   
 # Ejecutar la aplicación Shiny
 shinyApp(ui, server)
