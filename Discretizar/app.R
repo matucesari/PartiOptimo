@@ -1,6 +1,6 @@
 # Librerías
-libraries <- c("shiny", "classInt", "shinyWidgets", "shinydashboard", "RColorBrewer",
-               "shinyjs", "dplyr", "RColorBrewer", "DT","htmlwidgets","dplyr", "tidyr","ggplot2")
+libraries <- c("shiny", "shinydashboard", "shinycssloaders", "shinyWidgets",
+               "shinyjs", "dplyr", "RColorBrewer", "sparkline","DT","htmlwidgets","ggplot2","GGally")
 
 # Instala los paquetes si no están instalados
 install.packages(setdiff(libraries, rownames(installed.packages())), dependencies = TRUE)
@@ -19,8 +19,7 @@ sidebar <- dashboardSidebar(
   sidebarMenu(
     menuItem("Cargar la Tabla de Datos", tabName = "datos", icon = icon("table")),
     menuItem("Discretización", tabName = "parti", icon = icon("list-alt"))
-  ),
-  actionButton("exit_btn", "Salir")
+  )
 )
 
 # Cuerpo ------------------------------------------------------------------
@@ -44,7 +43,7 @@ body <- dashboardBody(
       h2("Datos Originales"),
       # Visualización de estadísticas y datos originales
       box(width = 12,
-          h3("Estadísitcas de las Variables Cuantitativas"),
+          h3("Estadísticas de las Variables Cuantitativas"),
           verbatimTextOutput("estadi"),
           box(width = 12, 
               plotOutput("corre"),
@@ -55,7 +54,7 @@ body <- dashboardBody(
           ),
           conditionalPanel(
             condition = "input.nominales == true",
-            h3("Estadísitcas de las Variables Cualitativas"),
+            h3("Estadísticas de las Variables Cualitativas"),
             plotOutput("bar_char")
           )
       ),
@@ -311,10 +310,6 @@ server <- function(input, output) {
                 row.names = TRUE)
     }
   )
-  # Detiene la aplicación Shiny cuando se presiona el botón de salida
-  observeEvent(input$exit_btn, {
-    stopApp()  
-  })
 }
   
 # Ejecutar la aplicación Shiny
